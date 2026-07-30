@@ -79,7 +79,14 @@ chmod 0755 \
   "$PACKAGE/monitor/install_ip2region.sh"
 
 ARCHIVE="$TEMPORARY/payload.tar.gz"
-COPYFILE_DISABLE=1 tar -C "$PACKAGE" -czf "$ARCHIVE" .
+if tar --no-xattrs --no-mac-metadata --version >/dev/null 2>&1; then
+  COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata \
+    -C "$PACKAGE" -czf "$ARCHIVE" .
+elif tar --no-xattrs --version >/dev/null 2>&1; then
+  COPYFILE_DISABLE=1 tar --no-xattrs -C "$PACKAGE" -czf "$ARCHIVE" .
+else
+  COPYFILE_DISABLE=1 tar -C "$PACKAGE" -czf "$ARCHIVE" .
+fi
 ARCHIVE_SHA256=$(sha256_file "$ARCHIVE")
 
 HEADER_TEMPLATE="$TEMPORARY/header.template"
