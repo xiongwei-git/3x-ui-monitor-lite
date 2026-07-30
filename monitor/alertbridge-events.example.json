@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "mode": "events",
+  "base_url": "https://notify.example.com",
+  "client_id": "replace-with-client-id",
+  "client_secret": "replace-with-client-secret",
+  "routing_key": "base",
+  "source": "threexui-script-monitor",
+  "labels": {
+    "server": "replace-with-server-name",
+    "service": "3x-ui"
+  }
+}

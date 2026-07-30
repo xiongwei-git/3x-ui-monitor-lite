@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "mode": "notifications",
+  "base_url": "https://notify.example.com",
+  "token": "replace-with-bearer-token",
+  "category": "3x-ui"
+}

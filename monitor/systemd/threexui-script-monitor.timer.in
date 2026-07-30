@@ -1,0 +1,12 @@
+[Unit]
+Description=Run ThreeXUIScriptMonitor periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=@INTERVAL_SECONDS@s
+RandomizedDelaySec=15s
+AccuracySec=15s
+Unit=threexui-script-monitor.service
+
+[Install]
+WantedBy=timers.target
