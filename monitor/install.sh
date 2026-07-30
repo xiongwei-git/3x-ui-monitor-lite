@@ -12,6 +12,9 @@ INSTANCE_LOCATION_SET=0
 XUI_EXECUTABLE=""
 DATABASE=""
 NOTIFICATION_CONFIG=""
+NOTIFICATION_PROVIDER="alertbridge"
+NOTIFIER_FILENAME="alertbridge_notify.py"
+NOTIFICATION_CONFIG_FILENAME="alertbridge.json"
 STAGE_ROOT=""
 PLATFORM=""
 
@@ -24,7 +27,7 @@ Options:
   --interval SECONDS          Run interval from 60 to 86400 (default: 300)
   --instance-name NAME        Name shown in notifications
   --instance-location TEXT    Optional location shown in templates
-  --notification-config FILE  AlertBridge events or notifications JSON config
+  --notification-config FILE  AlertBridge or Feishu webhook JSON config
   --xui-executable FILE       Override automatic 3x-ui executable discovery
   --database FILE             Override automatic x-ui.db discovery
   --stage-root DIR            Build a filesystem staging tree without activation
@@ -252,12 +255,14 @@ fi
 for file in \
   anomaly_monitor.py \
   alertbridge_notify.py \
+  feishu_notify.py \
   xui_discovery.py \
   install_ip2region.sh \
   uninstall.sh \
   monitor.example.json \
   alertbridge-events.example.json \
-  alertbridge-notifications.example.json
+  alertbridge-notifications.example.json \
+  feishu.example.json
 do
   if [ ! -f "$SCRIPT_DIR/$file" ]; then
     echo "missing installation file: $file" >&2
@@ -343,16 +348,47 @@ config["instance"].update(
 module.validate_config(config)
 PY
 
+select_notification_provider() {
+  NOTIFICATION_PROVIDER=$1
+  case "$NOTIFICATION_PROVIDER" in
+    alertbridge)
+      NOTIFIER_FILENAME="alertbridge_notify.py"
+      NOTIFICATION_CONFIG_FILENAME="alertbridge.json"
+      ;;
+    feishu_webhook)
+      NOTIFIER_FILENAME="feishu_notify.py"
+      NOTIFICATION_CONFIG_FILENAME="feishu.json"
+      ;;
+    *)
+      echo "notification provider is unsupported" >&2
+      exit 1
+      ;;
+  esac
+}
+
 if [ -n "$NOTIFICATION_CONFIG" ]; then
   if [ ! -f "$NOTIFICATION_CONFIG" ]; then
     echo "notification config was not found" >&2
     exit 1
   fi
-  "$PYTHON" - "$SCRIPT_DIR/alertbridge_notify.py" "$NOTIFICATION_CONFIG" <<'PY'
+  NOTIFICATION_PROVIDER=$(
+    "$PYTHON" - "$NOTIFICATION_CONFIG" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit("notification config must be an object")
+print(data.get("provider", "alertbridge"))
+PY
+  )
+  select_notification_provider "$NOTIFICATION_PROVIDER"
+  "$PYTHON" - "$SCRIPT_DIR/$NOTIFIER_FILENAME" "$NOTIFICATION_CONFIG" <<'PY'
 import importlib.util
 import sys
 
-spec = importlib.util.spec_from_file_location("alertbridge_notify", sys.argv[1])
+spec = importlib.util.spec_from_file_location("notification_provider", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 module.load_config(sys.argv[2], require_owner=False)
@@ -369,20 +405,35 @@ STATE_DIR=$(dest "/var/lib/$PRODUCT")
 DOC_DIR=$(dest "/usr/local/share/doc/$PRODUCT")
 BIN_PATH=$(dest "/usr/local/bin/$PRODUCT")
 MONITOR_CONFIG="$CONFIG_DIR/monitor.json"
-INSTALLED_NOTIFICATION_CONFIG="$CONFIG_DIR/alertbridge.json"
+
+if [ -z "$NOTIFICATION_CONFIG" ] && [ -f "$MONITOR_CONFIG" ]; then
+  NOTIFICATION_PROVIDER=$(
+    "$PYTHON" - "$MONITOR_CONFIG" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(data.get("notifications", {}).get("provider", "alertbridge"))
+PY
+  )
+  select_notification_provider "$NOTIFICATION_PROVIDER"
+fi
+INSTALLED_NOTIFICATION_CONFIG="$CONFIG_DIR/$NOTIFICATION_CONFIG_FILENAME"
 
 install -d -m 0750 "$LIB_DIR"
 install -d -m 0700 "$CONFIG_DIR"
 install -d -m 0700 "$STATE_DIR"
 install -d -m 0755 "$DOC_DIR"
 install -d -m 0755 "$(dirname "$BIN_PATH")"
-for file in anomaly_monitor.py alertbridge_notify.py xui_discovery.py install_ip2region.sh uninstall.sh; do
+for file in anomaly_monitor.py alertbridge_notify.py feishu_notify.py xui_discovery.py install_ip2region.sh uninstall.sh; do
   install -m 0750 "$SCRIPT_DIR/$file" "$LIB_DIR/$file"
 done
 install -m 0644 "$SCRIPT_DIR/README.md" "$DOC_DIR/README.md"
 install -m 0600 "$SCRIPT_DIR/monitor.example.json" "$CONFIG_DIR/monitor.example.json"
 install -m 0600 "$SCRIPT_DIR/alertbridge-events.example.json" "$CONFIG_DIR/alertbridge-events.example.json"
 install -m 0600 "$SCRIPT_DIR/alertbridge-notifications.example.json" "$CONFIG_DIR/alertbridge-notifications.example.json"
+install -m 0600 "$SCRIPT_DIR/feishu.example.json" "$CONFIG_DIR/feishu.example.json"
 
 NOTIFICATIONS_ENABLED=false
 if [ -n "$NOTIFICATION_CONFIG" ]; then
@@ -402,7 +453,10 @@ if [ ! -e "$MONITOR_CONFIG" ]; then
     "$INTERVAL" \
     "$INSTANCE_NAME" \
     "$INSTANCE_LOCATION" \
-    "$NOTIFICATIONS_ENABLED" <<'PY'
+    "$NOTIFICATIONS_ENABLED" \
+    "$NOTIFICATION_PROVIDER" \
+    "$NOTIFIER_FILENAME" \
+    "$NOTIFICATION_CONFIG_FILENAME" <<'PY'
 import json
 import os
 import sys
@@ -418,6 +472,9 @@ from pathlib import Path
     instance_name,
     instance_location,
     notifications_enabled,
+    notification_provider,
+    notifier_filename,
+    notification_config_filename,
 ) = sys.argv[1:]
 config = {
     "version": 1,
@@ -436,11 +493,13 @@ config = {
     },
     "notifications": {
         "enabled": notifications_enabled == "true",
-        "provider": "alertbridge",
+        "provider": notification_provider,
         "notifier_path": (
-            "/usr/local/lib/threexui-script-monitor/alertbridge_notify.py"
+            f"/usr/local/lib/threexui-script-monitor/{notifier_filename}"
         ),
-        "config_path": "/etc/threexui-script-monitor/alertbridge.json",
+        "config_path": (
+            f"/etc/threexui-script-monitor/{notification_config_filename}"
+        ),
         "title_template": "{instance_name}：{event_title}",
         "message_template": (
             "监控对象：{instance_name}\n"
@@ -493,7 +552,10 @@ else
     "$INSTANCE_NAME" \
     "$INSTANCE_LOCATION_SET" \
     "$INSTANCE_LOCATION" \
-    "$NOTIFICATION_CONFIG" <<'PY'
+    "$NOTIFICATION_CONFIG" \
+    "$NOTIFICATION_PROVIDER" \
+    "$NOTIFIER_FILENAME" \
+    "$NOTIFICATION_CONFIG_FILENAME" <<'PY'
 import importlib.util
 import json
 import os
@@ -521,7 +583,18 @@ if sys.argv[9] == "1":
 if sys.argv[11] == "1":
     config["instance"]["location"] = sys.argv[12]
 if sys.argv[13]:
-    config["notifications"]["enabled"] = True
+    config["notifications"].update(
+        {
+            "enabled": True,
+            "provider": sys.argv[14],
+            "notifier_path": (
+                "/usr/local/lib/threexui-script-monitor/" + sys.argv[15]
+            ),
+            "config_path": (
+                "/etc/threexui-script-monitor/" + sys.argv[16]
+            ),
+        }
+    )
 module.validate_config(config)
 temporary = path.with_name(path.name + ".tmp")
 temporary.write_text(
@@ -603,6 +676,7 @@ fi
 "$PYTHON" -m py_compile \
   "$LIB_DIR/anomaly_monitor.py" \
   "$LIB_DIR/alertbridge_notify.py" \
+  "$LIB_DIR/feishu_notify.py" \
   "$LIB_DIR/xui_discovery.py"
 
 if [ -z "$STAGE_ROOT" ]; then
@@ -635,7 +709,7 @@ echo "run interval: ${INTERVAL}s"
 if [ "$NOTIFICATIONS_ENABLED" = "true" ]; then
   echo "notifications: configured"
 else
-  echo "notifications: disabled until an AlertBridge config is installed"
+  echo "notifications: disabled until a notification config is installed"
 fi
 if [ "$ENABLE" -eq 0 ]; then
   echo "scheduler: installed but not enabled"

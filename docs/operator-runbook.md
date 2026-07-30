@@ -7,15 +7,15 @@
 ThreeXUIScriptMonitor 是一套独立、无 UI 的本机监控。它读取 3x-ui 服务状态和
 SQLite 数据库，不修改数据库、不重启服务、不变更防火墙，也不自动封禁客户端。
 
-本地监控无法报告整台主机宕机、断网或 AlertBridge 不可达，主机可用性仍需独立的
-外部监控。
+本地监控无法报告整台主机宕机、断网或通知服务不可达，主机可用性仍需独立的外部
+监控。
 
 ## 2. 安装前提
 
 - 目标主机已经安装 3x-ui。
 - 数据源为本机 SQLite；PostgreSQL 暂不支持。
 - Linux 使用 systemd；macOS 只实验性支持已有的自定义 3x-ui。
-- 能访问 AlertBridge HTTPS 地址时才可发送通知。
+- 发送通知时，目标主机必须能访问 AlertBridge 或飞书官方 HTTPS 地址。
 - Python 3.9+；Linux 安装器可尝试通过系统包管理器补齐。
 
 安装器只检查固定的常见路径，不扫描整台磁盘。自定义安装可传：
@@ -28,26 +28,57 @@ SQLite 数据库，不修改数据库、不重启服务、不变更防火墙，�
 数据库至少必须包含兼容的 `settings` 和 `inbounds` 表。节点、IP 和流量表按实际
 能力启用；缺少可选表不会导致整个监控失败。
 
-## 3. 准备 AlertBridge 配置
+## 3. 准备通知配置
 
-### HMAC Events，推荐
+安装器根据配置中的 `provider` 自动选择通知器。可选 AlertBridge 或飞书自定义
+机器人 Webhook。
+
+### 3.1 AlertBridge
+
+[AlertBridge](https://github.com/xiongwei-git/alertbridge) 是独立的统一通知网关，
+适合集中管理多个服务、多个通知渠道、路由和投递记录。
+
+#### HMAC Events，推荐
 
 从 `monitor/alertbridge-events.example.json` 复制。该模式调用
 `/api/v1/events`，支持 `firing` / `resolved`、稳定 `dedupe_key` 和事件生命周期。
 
-### Bearer Notifications
+#### Bearer Notifications
 
 从 `monitor/alertbridge-notifications.example.json` 复制。该模式调用
 `/api/v1/notifications`。异常和恢复都是互相独立的普通消息，不形成 AlertBridge
 事件生命周期。
 
-两种配置都必须：
+配置文件必须设为仅管理员可读：
 
 ```sh
 chmod 600 alertbridge.json
 ```
 
-不要把 Token、Secret 或完整私密 URL 写进项目、聊天、截图或命令参数。
+### 3.2 直连飞书自定义机器人
+
+适合只有一个飞书接收群、不需要统一通知网关的部署。飞书自定义机器人 Webhook
+只能向其所在群发送消息，不提供 AlertBridge 的多渠道路由、集中投递记录和事件
+生命周期。
+
+在目标群中添加自定义机器人，建议开启签名校验；如启用关键词校验，也要填写同一
+关键词。随后：
+
+```sh
+cp monitor/feishu.example.json feishu.json
+chmod 600 feishu.json
+```
+
+配置字段：
+
+- `webhook_url`：飞书或 Lark 自定义机器人的完整 Webhook 地址；
+- `signing_secret`：签名密钥，建议开启；未启用签名时填空字符串；
+- `keyword`：机器人启用的关键词；未启用时填空字符串。
+
+飞书官方说明见
+[自定义机器人指南](https://open.feishu.cn/document/ukTMukTMukTM/ucTM5YjL3ETO24yNxkjN?lang=zh-CN)。
+
+不要把 Token、Secret 或完整 Webhook URL 写进项目、聊天、截图或命令参数。
 
 ## 4. 构建和校验安装包
 
@@ -66,7 +97,7 @@ sudo sh threexui-script-monitor-0.1.0-dev-installer.sh \
   --instance-name '3x-ui Monitor' \
   --instance-location 'Singapore' \
   --interval 300 \
-  --notification-config ./alertbridge.json
+  --notification-config ./feishu.json
 ```
 
 此时仅安装，不启用调度。先执行：
@@ -133,11 +164,14 @@ sudo /usr/local/bin/threexui-script-monitor --dry-run --json
 第一次正式运行只建立流量基线。通知失败时状态不会保存，下一轮会再次尝试。
 
 AlertBridge 返回 `queued` 只证明入口接受了请求，不代表最终渠道已送达；还要检查
-AlertBridge 的下游投递记录。
+AlertBridge 的下游投递记录。飞书直连返回 `sent` 表示飞书接口已接受消息，不等于
+用户已阅读。
 
 ## 8. 手动测试通知
 
-命令从 root-only 配置读取密钥，不在命令行暴露：
+命令从 root-only 配置读取密钥，不在命令行暴露。
+
+AlertBridge：
 
 ```sh
 sudo /usr/local/lib/threexui-script-monitor/alertbridge_notify.py \
@@ -148,6 +182,16 @@ sudo /usr/local/lib/threexui-script-monitor/alertbridge_notify.py \
 ```
 
 HMAC 模式会发送 `status=test` 事件；Bearer 模式会发送一条普通通知。
+
+飞书直连：
+
+```sh
+sudo /usr/local/lib/threexui-script-monitor/feishu_notify.py \
+  --status test \
+  --severity info \
+  --title '3x-ui 通知链路测试' \
+  --message 'ThreeXUIScriptMonitor test'
+```
 
 ## 9. 管理员 IP 明细
 
@@ -216,6 +260,7 @@ sudo /usr/local/lib/threexui-script-monitor/uninstall.sh --purge
 | `notification config permissions must be 0600` | 修正通知密钥文件权限 |
 | 服务 active 但没消息 | 先看日志和试运行；没有异常时本来就不会通知 |
 | `queued` 但下游没收到 | 检查 AlertBridge 路由和最终投递记录 |
+| `Feishu rejected the notification` | 检查机器人是否启用了正确的签名或关键词 |
 | 监控主机宕机没有通知 | 增加独立外部可用性监控 |
 
 ## 13. 安全规则

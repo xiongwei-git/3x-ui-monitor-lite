@@ -86,6 +86,25 @@ class AnomalyMonitorTest(unittest.TestCase):
         with self.assertRaisesRegex(monitor.MonitorError, "interval_seconds"):
             monitor.validate_config(config)
 
+    def test_config_accepts_feishu_webhook_provider(self):
+        config = monitor.default_config()
+        config["notifications"].update(
+            {
+                "provider": "feishu_webhook",
+                "notifier_path": (
+                    "/usr/local/lib/threexui-script-monitor/feishu_notify.py"
+                ),
+                "config_path": "/etc/threexui-script-monitor/feishu.json",
+            }
+        )
+
+        validated = monitor.validate_config(config)
+
+        self.assertEqual(
+            validated["notifications"]["provider"],
+            "feishu_webhook",
+        )
+
     def test_load_config_maps_legacy_notification_and_service_fields(self):
         legacy = {
             "version": 1,

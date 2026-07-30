@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "provider": "alertbridge",
   "mode": "events",
   "base_url": "https://notify.example.com",
   "client_id": "replace-with-client-id",

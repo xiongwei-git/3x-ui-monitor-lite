@@ -28,7 +28,7 @@ MAX_NOTIFICATION_BODY_BYTES = 8 * 1024
 EVENT_PATH = "/api/v1/events"
 NOTIFICATION_PATH = "/api/v1/notifications"
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
-COMMON_CONFIG_KEYS = {"version", "mode", "base_url"}
+COMMON_CONFIG_KEYS = {"version", "provider", "mode", "base_url"}
 EVENT_CONFIG_KEYS = COMMON_CONFIG_KEYS | {
     "client_id",
     "client_secret",
@@ -95,6 +95,8 @@ def load_config(
 
     if data.get("version", 1) != 1:
         raise NotifyError("unsupported notification config version")
+    if data.get("provider", "alertbridge") != "alertbridge":
+        raise NotifyError("notification provider must be alertbridge")
     mode = data.get("mode", "events")
     if mode not in {"events", "notifications"}:
         raise NotifyError("notification mode is invalid")
@@ -119,6 +121,7 @@ def load_config(
             raise NotifyError("notification category is invalid")
         return {
             "version": 1,
+            "provider": "alertbridge",
             "mode": mode,
             "base_url": base_url,
             "token": token,
@@ -143,6 +146,7 @@ def load_config(
         normalized_labels[normalized_key] = normalized_value
     return {
         "version": 1,
+        "provider": "alertbridge",
         "mode": mode,
         "base_url": base_url,
         "client_id": client_id,

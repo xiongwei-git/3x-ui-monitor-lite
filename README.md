@@ -17,7 +17,8 @@ ThreeXUIScriptMonitor 是一套无 UI、低资源占用、可独立部署的 3x-
 - 统计客户端近期公网 IP 数和两次运行之间的流量增长。
 - 可显式启用管理员私密 IP 明细，离线补充地区和运营商；原始 IP 不写入状态文件。
 - 对异常去重、定期重复提醒，并发送恢复通知。
-- 支持 AlertBridge 的 HMAC Events 和 Bearer Notifications 两种接入方式。
+- 支持 AlertBridge 的 HMAC Events、Bearer Notifications，以及飞书自定义机器人
+  Webhook 直连。
 - 通知标题、正文、实例名称和位置可配置，并内置默认模板。
 - 运行周期可配置为 60–86400 秒。
 
@@ -68,9 +69,19 @@ sudo ./monitor/install.sh \
 
 ## 配置通知
 
-AlertBridge 支持两种接入方式：
+通知不是必须经过 AlertBridge。安装器会读取通知配置中的 `provider`，自动安装并
+启用对应通知器。
 
-| 模式 | 示例文件 | 特点 |
+### 方式一：通过 AlertBridge
+
+[AlertBridge](https://github.com/xiongwei-git/alertbridge) 是独立的统一通知网关，
+可把多个服务的事件集中路由到飞书、Telegram、邮件、ntfy 等渠道，并统一管理渠道
+密钥、路由和投递记录。需要多服务共用通知、集中配置或告警生命周期时，推荐使用
+这种方式。
+
+ThreeXUIScriptMonitor 支持 AlertBridge 的两种入口：
+
+| 接入模式 | 示例文件 | 特点 |
 | --- | --- | --- |
 | HMAC Events | `monitor/alertbridge-events.example.json` | 推荐；支持告警、恢复、去重和事件生命周期 |
 | Bearer Notifications | `monitor/alertbridge-notifications.example.json` | 每次发送一条独立普通通知 |
@@ -93,8 +104,39 @@ sudo ./monitor/install.sh \
   --enable
 ```
 
-安装器只把密钥配置复制到 `/etc/threexui-script-monitor/alertbridge.json`，不会把
-密钥写入监控主配置或状态文件。
+### 方式二：直连飞书自定义机器人
+
+不部署 AlertBridge 也可以直接发送到飞书群机器人。该方式配置最少，适合只有一个
+接收群的轻量部署；但没有 AlertBridge 提供的多渠道路由、集中投递记录和事件
+生命周期。
+
+1. 在目标飞书群的设置中添加“自定义机器人”，取得 Webhook 地址。
+2. 建议开启“签名校验”；如机器人启用了关键词校验，把同一关键词写入配置。
+3. 复制并填写示例文件：
+
+```sh
+cp monitor/feishu.example.json feishu.json
+chmod 600 feishu.json
+```
+
+4. 使用同一个安装参数部署：
+
+```sh
+sudo ./monitor/install.sh \
+  --instance-name 'SG-Panel-01' \
+  --instance-location 'Singapore' \
+  --interval 300 \
+  --notification-config ./feishu.json \
+  --enable
+```
+
+飞书 Webhook 完整地址和签名密钥都属于敏感信息，不要提交到 Git、粘贴到聊天或
+直接写进安装命令。直连方式使用飞书文本消息，监控本身的异常去重和恢复通知仍然
+有效。飞书侧的创建与安全设置见
+[自定义机器人指南](https://open.feishu.cn/document/ukTMukTMukTM/ucTM5YjL3ETO24yNxkjN?lang=zh-CN)。
+
+安装器会把密钥配置复制到 `/etc/threexui-script-monitor/alertbridge.json` 或
+`/etc/threexui-script-monitor/feishu.json`，不会把密钥写入监控主配置或状态文件。
 
 ## 安装参数
 
@@ -104,7 +146,7 @@ sudo ./monitor/install.sh \
 | `--interval SECONDS` | 运行周期，范围 60–86400 秒，默认 300 |
 | `--instance-name NAME` | 通知中显示的实例名称 |
 | `--instance-location TEXT` | 可选的位置说明 |
-| `--notification-config FILE` | AlertBridge 配置文件；省略时通知保持关闭 |
+| `--notification-config FILE` | AlertBridge 或飞书 Webhook 配置；省略时通知保持关闭 |
 | `--xui-executable FILE` | 手动指定 3x-ui 可执行文件 |
 | `--database FILE` | 手动指定 3x-ui SQLite 数据库 |
 | `--stage-root DIR` | 只生成安装文件树，不启用服务，用于测试 |
@@ -134,7 +176,7 @@ sudo sh threexui-script-monitor-0.1.0-dev-installer.sh \
   --instance-name 'SG-Panel-01' \
   --instance-location 'Singapore' \
   --interval 300 \
-  --notification-config ./alertbridge.json \
+  --notification-config ./feishu.json \
   --enable
 ```
 
@@ -166,7 +208,7 @@ sudo sh threexui-script-monitor-0.1.0-dev-installer.sh \
 - `/usr/local/bin/threexui-script-monitor`
 - `/usr/local/lib/threexui-script-monitor/`
 - `/etc/threexui-script-monitor/monitor.json`
-- `/etc/threexui-script-monitor/alertbridge.json`
+- `/etc/threexui-script-monitor/alertbridge.json` 或 `feishu.json`
 - `/var/lib/threexui-script-monitor/`
 - Linux：`threexui-script-monitor.service` 和 `.timer`
 - macOS：`com.threexui.script-monitor.plist`
@@ -214,6 +256,7 @@ python3 -m unittest discover -s test -p '*_test.py'
 python3 -m py_compile \
   monitor/anomaly_monitor.py \
   monitor/alertbridge_notify.py \
+  monitor/feishu_notify.py \
   monitor/xui_discovery.py
 sh -n \
   monitor/install.sh \
