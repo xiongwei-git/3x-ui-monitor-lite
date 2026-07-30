@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "scheduler": {
+    "enabled": true,
+    "interval_seconds": 300
+  },
+  "xui": {
+    "executable_path": "/usr/local/x-ui/x-ui",
+    "database_path": "/etc/x-ui/x-ui.db",
+    "service_name": "x-ui.service"
+  },
+  "instance": {
+    "name": "3x-ui Monitor",
+    "location": "Singapore"
+  },
+  "notifications": {
+    "enabled": true,
+    "title_template": "{instance_name}：{event_title}",
+    "message_template": "监控对象：{instance_name}\n事件状态：{event_status}\n详细信息：{event_message}\n{event_details}",
+    "delivery": {
+      "version": 1,
+      "provider": "alertbridge",
+      "mode": "events",
+      "base_url": "https://notify.example.com",
+      "client_id": "replace-with-client-id",
+      "client_secret": "replace-with-client-secret",
+      "routing_key": "base",
+      "source": "threexui-script-monitor",
+      "labels": {
+        "server": "replace-with-server-name",
+        "service": "3x-ui"
+      }
+    }
+  },
+  "client_ip_details": {
+    "exposure": "none",
+    "max_entries": 8,
+    "database_path": "/usr/local/share/threexui-script-monitor/ip2region_v4.xdb"
+  },
+  "checks": {
+    "node_heartbeat_max_age_seconds": 180,
+    "node_latency_warn_ms": 2000,
+    "node_cpu_warn_percent": 95,
+    "node_memory_warn_percent": 90,
+    "ip_window_seconds": 1800,
+    "ip_warn_count": 4,
+    "ip_critical_count": 8,
+    "traffic_interval_seconds": 300,
+    "traffic_min_elapsed_seconds": 60,
+    "traffic_max_elapsed_seconds": 1800,
+    "traffic_warn_bytes_per_interval": 5368709120,
+    "traffic_critical_bytes_per_interval": 16106127360,
+    "repeat_alert_seconds": 21600
+  }
+}

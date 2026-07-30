@@ -90,6 +90,10 @@ def load_config(
         data = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise NotifyError("notification config is invalid") from exc
+    return validate_config(data)
+
+
+def validate_config(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise NotifyError("notification config must be an object")
 

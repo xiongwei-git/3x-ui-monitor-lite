@@ -80,7 +80,37 @@ chmod 600 feishu.json
 
 不要把 Token、Secret 或完整 Webhook URL 写进项目、聊天、截图或命令参数。
 
-## 4. 构建和校验安装包
+## 4. 标准部署配置
+
+需要重复部署、迁移旧实例或保留完整配置时，推荐使用单个标准配置文件：
+
+```sh
+cp monitor/deployment.example.json deployment.json
+chmod 600 deployment.json
+sudo ./monitor/install.sh --config ./deployment.json
+```
+
+标准配置包含：
+
+- `scheduler`：调度开关和运行周期；
+- `xui`：3x-ui 可执行文件、SQLite 数据库和服务名；
+- `instance`：实例名称和位置；
+- `notifications`：开关、模板及完整 `delivery` 通道配置；
+- `client_ip_details`：IP 明细暴露范围和离线库；
+- `checks`：全部异常阈值和重复提醒周期。
+
+`notifications.delivery` 直接使用 AlertBridge 或飞书通知配置结构。通知关闭时可以
+设为 `null`。安装器会把密钥从运行配置中拆出，写入单独的 `0600` 文件。
+
+标准配置是一次安装的唯一配置来源，不能和其他配置类参数混用。`--stage-root` 和
+`--platform` 仍可用于离线验证。重新运行 `install.sh --config` 会按该文件重新应用
+完整监控配置，不会合并已安装配置中的未声明值。
+
+这个文件本身含有密钥，应只保存在管理员可读的位置，不要提交到 Git。运行时的
+`threexui-script-monitor --config` 是另一层接口，只接受安装后生成的
+`monitor.json`。
+
+## 5. 构建和校验安装包
 
 ```sh
 sh scripts/build-installer.sh
@@ -90,7 +120,7 @@ shasum -a 256 -c threexui-script-monitor-0.1.0-dev-installer.sh.sha256
 
 Linux 可使用 `sha256sum -c`。单文件安装器还会自行验证内嵌 payload。
 
-## 5. 安装
+## 6. 安装
 
 ```sh
 sudo sh threexui-script-monitor-0.1.0-dev-installer.sh \
@@ -126,7 +156,7 @@ sudo launchctl print system/com.threexui.script-monitor
 
 也可在首次安装时直接加 `--enable`，但正式环境仍建议先试运行。
 
-## 6. 周期、实例和模板
+## 7. 周期、实例和模板
 
 安装参数 `--interval` 接受 60–86400 秒，并写入：
 
@@ -138,7 +168,7 @@ sudo launchctl print system/com.threexui.script-monitor
 `/etc/threexui-script-monitor/monitor.json` 后，先运行试检查。修改周期时还要重新
 运行安装器生成调度文件，或同步修改 timer/plist，避免配置和实际周期不一致。
 
-## 7. 日常检查
+## 8. 日常检查
 
 Linux：
 
@@ -167,7 +197,7 @@ AlertBridge 返回 `queued` 只证明入口接受了请求，不代表最终渠�
 AlertBridge 的下游投递记录。飞书直连返回 `sent` 表示飞书接口已接受消息，不等于
 用户已阅读。
 
-## 8. 手动测试通知
+## 9. 手动测试通知
 
 命令从 root-only 配置读取密钥，不在命令行暴露。
 
@@ -193,7 +223,7 @@ sudo /usr/local/lib/threexui-script-monitor/feishu_notify.py \
   --message 'ThreeXUIScriptMonitor test'
 ```
 
-## 9. 管理员 IP 明细
+## 10. 管理员 IP 明细
 
 默认 `client_ip_details.exposure=none`，通知中只出现 IP 数量。只有收件人全部具备
 查看原始 IP 权限时，才可启用明细。
@@ -220,7 +250,7 @@ sudo cat /usr/local/share/threexui-script-monitor/ip2region-version.txt
 离线库提供 IPv4 地区和运营商，不提供 ASN。IPv6 按 `/64` 聚合，当前无离线归属。
 原始 IP 不写入 `state.json`，但会出现在私密通知和 `--dry-run --json` 输出中。
 
-## 10. 更新与回滚
+## 11. 更新与回滚
 
 更新前备份：
 
@@ -234,7 +264,7 @@ sudo cat /usr/local/share/threexui-script-monitor/ip2region-version.txt
 旧版或其他同类监控不能与本产品长期同时启用，否则可能重复告警。迁移已有实例时
 必须单独制定备份、停旧、安装新、试运行、启新和回滚步骤。
 
-## 11. 卸载
+## 12. 卸载
 
 默认保留配置和状态：
 
@@ -250,20 +280,22 @@ sudo /usr/local/lib/threexui-script-monitor/uninstall.sh --purge
 
 `--purge` 不可逆，执行前先备份。
 
-## 12. 常见故障
+## 13. 常见故障
 
 | 现象 | 处理 |
 | --- | --- |
 | `3x-ui executable was not found` | 用 `--xui-executable` 指定真实可执行文件 |
 | `database is not a compatible 3x-ui SQLite database` | 确认是 3x-ui SQLite，而非 PostgreSQL 或其他数据库 |
 | `unknown config key` | 修正拼写；配置采用严格字段校验 |
+| `--config cannot be combined` | 只保留标准配置文件参数，移除其他配置类参数 |
+| `deployment config permissions must be 0600` | 收紧标准配置文件权限 |
 | `notification config permissions must be 0600` | 修正通知密钥文件权限 |
 | 服务 active 但没消息 | 先看日志和试运行；没有异常时本来就不会通知 |
 | `queued` 但下游没收到 | 检查 AlertBridge 路由和最终投递记录 |
 | `Feishu rejected the notification` | 检查机器人是否启用了正确的签名或关键词 |
 | 监控主机宕机没有通知 | 增加独立外部可用性监控 |
 
-## 13. 安全规则
+## 14. 安全规则
 
 - 主配置不得对 group/other 可写，通知密钥配置必须为 `0600`。
 - 安装器与监控只读打开 `x-ui.db`。

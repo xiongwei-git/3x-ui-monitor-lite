@@ -6,6 +6,7 @@
 
 - `anomaly_monitor.py`：只读数据库检查、去重、恢复和通知模板。
 - `alertbridge_notify.py`：AlertBridge HMAC Events / Bearer Notifications。
+- `deployment_config.py`：完整标准部署配置的校验和安全拆分。
 - `feishu_notify.py`：飞书或 Lark 自定义机器人 Webhook 直连。
 - `xui_discovery.py`：3x-ui 可执行文件、SQLite 结构和能力探测。
 - `install.sh`：Linux systemd / macOS LaunchDaemon 安装。
@@ -30,3 +31,11 @@ sudo ./install.sh \
 
 完整说明见项目根目录 [README](../README.md) 和
 [运维手顺](../docs/operator-runbook.md)。
+
+也可以只传一个完整标准配置：
+
+```sh
+sudo ./install.sh --config ./deployment.json
+```
+
+模板见 `deployment.example.json`。该文件可包含通知密钥，必须设置为 `0600`。

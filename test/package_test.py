@@ -1,5 +1,7 @@
 import hashlib
+import io
 import subprocess
+import tarfile
 import unittest
 from pathlib import Path
 
@@ -25,6 +27,16 @@ class PackageTest(unittest.TestCase):
         expected = checksum_path.read_text(encoding="utf-8").split()[0]
         actual = hashlib.sha256(output.read_bytes()).hexdigest()
         self.assertEqual(actual, expected)
+        marker = b"__THREEXUI_PAYLOAD_BELOW__\n"
+        archive = output.read_bytes().split(marker, 1)[1]
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as bundle:
+            extended_attributes = {
+                key
+                for member in bundle.getmembers()
+                for key in member.pax_headers
+                if "xattr" in key.lower() or "mac" in key.lower()
+            }
+        self.assertEqual(extended_attributes, set())
 
         help_result = subprocess.run(
             ["sh", str(output), "--help"],
@@ -34,7 +46,12 @@ class PackageTest(unittest.TestCase):
             check=False,
         )
         self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        self.assertIn("--config", help_result.stdout)
         self.assertIn("--interval", help_result.stdout)
+        self.assertNotIn(
+            "extended header keyword",
+            help_result.stderr,
+        )
         self.assertIn("payload verified", help_result.stderr)
 
 
