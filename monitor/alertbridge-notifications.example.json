@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "provider": "alertbridge",
   "mode": "notifications",
   "base_url": "https://notify.example.com",
   "token": "replace-with-bearer-token",

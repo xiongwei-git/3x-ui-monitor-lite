@@ -28,10 +28,12 @@ macOS 列为受支持系统，因此不能承诺在 macOS 上安装或维护 3x-
    - `notifications`：开关、通知器、模板。
 5. 配置使用严格字段校验，未知字段直接报错。主配置和通知密钥配置都必须为 root
    所有，且不得对 group/other 可写；包含密钥的文件必须为 `0600`。
-6. 默认通知通道为 AlertBridge，支持两种接入模式：
+6. 通知器使用可配置的 `provider`。默认通道为 AlertBridge，并支持两种接入模式：
    - `events`：HMAC `/api/v1/events`，支持 `firing/resolved`、幂等和去重；
    - `notifications`：Bearer `/api/v1/notifications`，只发送一次性通知，不表达
      AlertBridge 活跃故障生命周期。
+   另支持 `feishu_webhook`，直接调用飞书或 Lark 自定义机器人 Webhook；该方式保留
+   监控本地的异常去重和恢复通知，但不提供网关侧路由、投递历史和事件生命周期。
 7. 标题和正文使用有限占位符模板。模板不能执行表达式，未知占位符拒绝加载。
 8. 对外部署产物为带版本和 SHA-256 的单文件自解压安装器。用户可以用一条 shell
    命令下载后执行；不采用 Docker。
@@ -82,5 +84,7 @@ macOS 列为受支持系统，因此不能承诺在 macOS 上安装或维护 3x-
   会在零安装状态下退出并给出明确原因，不自动安装 Homebrew。
 - Bearer 模式的“恢复通知”只是另一条一次性消息；需要 AlertBridge 故障闭环时必须
   使用默认 HMAC 模式。
+- 飞书直连减少了部署依赖，但绑定单个机器人所在群；需要多渠道、集中密钥管理或
+  投递审计时应使用 AlertBridge。
 - 自动探测不能替代显式覆盖。高级用户仍可通过受校验的安装参数指定 3x-ui
   可执行文件和 SQLite 路径。

@@ -203,6 +203,106 @@ class InstallerTest(unittest.TestCase):
             ).read_text(encoding="utf-8")
             self.assertIn("<integer>600</integer>", plist)
 
+    def test_stage_install_configures_direct_feishu_webhook(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            executable, database = make_installation(workspace)
+            stage = workspace / "stage"
+            notification = workspace / "feishu.json"
+            notification.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "provider": "feishu_webhook",
+                        "webhook_url": (
+                            "https://open.feishu.cn/open-apis/bot/v2/hook/"
+                            "00000000-0000-0000-0000-000000000000"
+                        ),
+                        "signing_secret": "demo-signing-secret",
+                        "keyword": "3x-ui",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            os.chmod(notification, 0o600)
+
+            result = subprocess.run(
+                [
+                    "sh",
+                    str(INSTALLER),
+                    "--stage-root",
+                    str(stage),
+                    "--platform",
+                    "linux",
+                    "--xui-executable",
+                    str(executable),
+                    "--database",
+                    str(database),
+                    "--notification-config",
+                    str(notification),
+                ],
+                cwd=ROOT,
+                env={**os.environ, "PYTHON": sys.executable},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config = json.loads(
+                (
+                    stage / "etc/threexui-script-monitor/monitor.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                config["notifications"]["provider"],
+                "feishu_webhook",
+            )
+            self.assertEqual(
+                config["notifications"]["notifier_path"],
+                "/usr/local/lib/threexui-script-monitor/feishu_notify.py",
+            )
+            self.assertEqual(
+                config["notifications"]["config_path"],
+                "/etc/threexui-script-monitor/feishu.json",
+            )
+            self.assertTrue(
+                (
+                    stage
+                    / "etc/threexui-script-monitor/feishu.json"
+                ).exists()
+            )
+
+            reinstall = subprocess.run(
+                [
+                    "sh",
+                    str(INSTALLER),
+                    "--stage-root",
+                    str(stage),
+                    "--platform",
+                    "linux",
+                    "--xui-executable",
+                    str(executable),
+                    "--database",
+                    str(database),
+                ],
+                cwd=ROOT,
+                env={**os.environ, "PYTHON": sys.executable},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(reinstall.returncode, 0, reinstall.stderr)
+            preserved = json.loads(
+                (
+                    stage / "etc/threexui-script-monitor/monitor.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                preserved["notifications"]["provider"],
+                "feishu_webhook",
+            )
+
     def test_invalid_interval_is_rejected_before_writes(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)

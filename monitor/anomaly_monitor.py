@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only 3x-ui anomaly checks with deduplicated AlertBridge events."""
+"""Read-only 3x-ui anomaly checks with deduplicated notifications."""
 
 from __future__ import annotations
 
@@ -310,7 +310,10 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     )
     if not isinstance(notifications.get("enabled"), bool):
         raise MonitorError("notifications.enabled must be true or false")
-    if notifications.get("provider") != "alertbridge":
+    if notifications.get("provider") not in {
+        "alertbridge",
+        "feishu_webhook",
+    }:
         raise MonitorError("notifications.provider is unsupported")
     require_absolute_path(notifications, "notifier_path")
     require_absolute_path(notifications, "config_path")
