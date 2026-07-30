@@ -34,6 +34,7 @@ class PackageTest(unittest.TestCase):
             check=False,
         )
         self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        self.assertIn("--config", help_result.stdout)
         self.assertIn("--interval", help_result.stdout)
         self.assertIn("payload verified", help_result.stderr)
 

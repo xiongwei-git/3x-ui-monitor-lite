@@ -45,6 +45,7 @@ for file in \
   README.md \
   anomaly_monitor.py \
   alertbridge_notify.py \
+  deployment_config.py \
   feishu_notify.py \
   xui_discovery.py \
   install.sh \
@@ -53,6 +54,7 @@ for file in \
   monitor.example.json \
   alertbridge-events.example.json \
   alertbridge-notifications.example.json \
+  deployment.example.json \
   feishu.example.json
 do
   cp "$ROOT/monitor/$file" "$PACKAGE/monitor/$file"
@@ -69,6 +71,7 @@ cp \
 chmod 0755 \
   "$PACKAGE/monitor/anomaly_monitor.py" \
   "$PACKAGE/monitor/alertbridge_notify.py" \
+  "$PACKAGE/monitor/deployment_config.py" \
   "$PACKAGE/monitor/feishu_notify.py" \
   "$PACKAGE/monitor/xui_discovery.py" \
   "$PACKAGE/monitor/install.sh" \

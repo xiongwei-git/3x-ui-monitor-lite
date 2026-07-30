@@ -29,7 +29,160 @@ def make_installation(root: Path) -> tuple[Path, Path]:
     return executable, database
 
 
+def make_deployment_config(
+    path: Path,
+    executable: Path,
+    database: Path,
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "scheduler": {
+                    "enabled": False,
+                    "interval_seconds": 480,
+                },
+                "xui": {
+                    "executable_path": str(executable),
+                    "database_path": str(database),
+                    "service_name": "x-ui.service",
+                },
+                "instance": {
+                    "name": "Config-Panel-01",
+                    "location": "Singapore",
+                },
+                "notifications": {
+                    "enabled": True,
+                    "title_template": "{instance_name}：{event_title}",
+                    "message_template": (
+                        "监控对象：{instance_name}\n"
+                        "事件状态：{event_status}\n"
+                        "详细信息：{event_message}\n"
+                        "{event_details}"
+                    ),
+                    "delivery": {
+                        "version": 1,
+                        "provider": "alertbridge",
+                        "mode": "notifications",
+                        "base_url": "https://notify.example.com",
+                        "token": "deployment-config-token",
+                        "category": "3x-ui",
+                    },
+                },
+                "client_ip_details": {
+                    "exposure": "full",
+                    "max_entries": 5,
+                    "database_path": (
+                        "/usr/local/share/threexui-script-monitor/"
+                        "ip2region_v4.xdb"
+                    ),
+                },
+                "checks": {
+                    "node_heartbeat_max_age_seconds": 210,
+                    "node_latency_warn_ms": 1900,
+                    "node_cpu_warn_percent": 94,
+                    "node_memory_warn_percent": 89,
+                    "ip_window_seconds": 2100,
+                    "ip_warn_count": 5,
+                    "ip_critical_count": 9,
+                    "traffic_interval_seconds": 480,
+                    "traffic_min_elapsed_seconds": 60,
+                    "traffic_max_elapsed_seconds": 1800,
+                    "traffic_warn_bytes_per_interval": 5368709120,
+                    "traffic_critical_bytes_per_interval": 16106127360,
+                    "repeat_alert_seconds": 18000,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+
+
 class InstallerTest(unittest.TestCase):
+    def test_stage_install_accepts_single_standard_config_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            executable, database = make_installation(workspace)
+            deployment = workspace / "deployment.json"
+            make_deployment_config(deployment, executable, database)
+            stage = workspace / "stage"
+
+            result = subprocess.run(
+                [
+                    "sh",
+                    str(INSTALLER),
+                    "--config",
+                    str(deployment),
+                    "--stage-root",
+                    str(stage),
+                    "--platform",
+                    "linux",
+                ],
+                cwd=ROOT,
+                env={**os.environ, "PYTHON": sys.executable},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            monitor_path = stage / "etc/threexui-script-monitor/monitor.json"
+            monitor = json.loads(monitor_path.read_text(encoding="utf-8"))
+            self.assertEqual(monitor["instance"]["name"], "Config-Panel-01")
+            self.assertEqual(monitor["runtime"]["interval_seconds"], 480)
+            self.assertEqual(monitor["checks"]["ip_warn_count"], 5)
+            self.assertEqual(monitor["client_ip_details"]["exposure"], "full")
+            self.assertTrue(monitor["notifications"]["enabled"])
+            self.assertNotIn(
+                "deployment-config-token",
+                monitor_path.read_text(encoding="utf-8"),
+            )
+            installed_notification = (
+                stage / "etc/threexui-script-monitor/alertbridge.json"
+            )
+            self.assertIn(
+                "deployment-config-token",
+                installed_notification.read_text(encoding="utf-8"),
+            )
+            timer = (
+                stage
+                / "etc/systemd/system/threexui-script-monitor.timer"
+            ).read_text(encoding="utf-8")
+            self.assertIn("OnUnitActiveSec=480s", timer)
+
+    def test_standard_config_rejects_conflicting_cli_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            executable, database = make_installation(workspace)
+            deployment = workspace / "deployment.json"
+            make_deployment_config(deployment, executable, database)
+            stage = workspace / "stage"
+
+            result = subprocess.run(
+                [
+                    "sh",
+                    str(INSTALLER),
+                    "--config",
+                    str(deployment),
+                    "--interval",
+                    "600",
+                    "--stage-root",
+                    str(stage),
+                    "--platform",
+                    "linux",
+                ],
+                cwd=ROOT,
+                env={**os.environ, "PYTHON": sys.executable},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("cannot be combined", result.stderr)
+            self.assertFalse(stage.exists())
+
     def test_stage_install_generates_product_paths_and_interval(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)

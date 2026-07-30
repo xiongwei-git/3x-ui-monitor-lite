@@ -56,6 +56,31 @@ sudo ./monitor/install.sh \
 安装器会自动寻找 3x-ui 可执行文件和 `x-ui.db`。找不到或数据库不兼容时会退出，
 不会创建 ThreeXUIScriptMonitor 产品文件。
 
+### 使用一个标准配置文件
+
+除逐项传命令行参数外，也可以把部署所需的全部信息写入一个 JSON：
+
+```sh
+cp monitor/deployment.example.json deployment.json
+chmod 600 deployment.json
+sudo ./monitor/install.sh --config ./deployment.json
+```
+
+`deployment.json` 同时包含调度开关和周期、3x-ui 路径、实例信息、检查阈值、IP
+明细策略、通知模板以及 AlertBridge 或飞书通道配置。安装器会严格校验后拆分为：
+
+- 不含通知密钥的运行配置 `monitor.json`；
+- 单独以 `0600` 保存的 AlertBridge 或飞书通知配置。
+
+因为标准配置可能包含 Token、Secret 或完整 Webhook，它自身也必须设置为 `0600`，
+不得提交到 Git。`--config` 不能与 `--enable`、`--interval`、
+`--instance-name`、`--instance-location`、`--notification-config`、
+`--xui-executable` 或 `--database` 混用；标准配置是本次安装的唯一配置来源。
+
+运行时监控程序原本也支持 `--config /path/to/monitor.json`。两者用途不同：
+`install.sh --config` 读取完整部署配置，`threexui-script-monitor --config` 读取安装后
+的无密钥运行配置。
+
 如 3x-ui 使用了自定义路径：
 
 ```sh
@@ -142,6 +167,7 @@ sudo ./monitor/install.sh \
 
 | 参数 | 说明 |
 | --- | --- |
+| `--config FILE` | 完整标准部署配置；不能与其他配置参数混用 |
 | `--enable` | 安装后启用并启动调度 |
 | `--interval SECONDS` | 运行周期，范围 60–86400 秒，默认 300 |
 | `--instance-name NAME` | 通知中显示的实例名称 |
@@ -256,6 +282,7 @@ python3 -m unittest discover -s test -p '*_test.py'
 python3 -m py_compile \
   monitor/anomaly_monitor.py \
   monitor/alertbridge_notify.py \
+  monitor/deployment_config.py \
   monitor/feishu_notify.py \
   monitor/xui_discovery.py
 sh -n \

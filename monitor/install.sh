@@ -12,6 +12,11 @@ INSTANCE_LOCATION_SET=0
 XUI_EXECUTABLE=""
 DATABASE=""
 NOTIFICATION_CONFIG=""
+DEPLOYMENT_CONFIG=""
+DEPLOYMENT_PLAN=""
+DEPLOYMENT_PLAN_LOADED=0
+CONFIG_MODE=0
+CLI_CONFIGURATION_SET=0
 NOTIFICATION_PROVIDER="alertbridge"
 NOTIFIER_FILENAME="alertbridge_notify.py"
 NOTIFICATION_CONFIG_FILENAME="alertbridge.json"
@@ -23,6 +28,7 @@ usage() {
 Usage: install.sh [options]
 
 Options:
+  --config FILE               Load all settings from one deployment JSON file
   --enable                    Enable and start the scheduled monitor
   --interval SECONDS          Run interval from 60 to 86400 (default: 300)
   --instance-name NAME        Name shown in notifications
@@ -45,41 +51,54 @@ require_value() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --config)
+      require_value "$@"
+      DEPLOYMENT_CONFIG=$2
+      CONFIG_MODE=1
+      shift 2
+      ;;
     --enable)
       ENABLE=1
+      CLI_CONFIGURATION_SET=1
       shift
       ;;
     --interval)
       require_value "$@"
       INTERVAL=$2
       INTERVAL_SET=1
+      CLI_CONFIGURATION_SET=1
       shift 2
       ;;
     --instance-name)
       require_value "$@"
       INSTANCE_NAME=$2
       INSTANCE_NAME_SET=1
+      CLI_CONFIGURATION_SET=1
       shift 2
       ;;
     --instance-location)
       require_value "$@"
       INSTANCE_LOCATION=$2
       INSTANCE_LOCATION_SET=1
+      CLI_CONFIGURATION_SET=1
       shift 2
       ;;
     --notification-config)
       require_value "$@"
       NOTIFICATION_CONFIG=$2
+      CLI_CONFIGURATION_SET=1
       shift 2
       ;;
     --xui-executable)
       require_value "$@"
       XUI_EXECUTABLE=$2
+      CLI_CONFIGURATION_SET=1
       shift 2
       ;;
     --database)
       require_value "$@"
       DATABASE=$2
+      CLI_CONFIGURATION_SET=1
       shift 2
       ;;
     --stage-root)
@@ -104,6 +123,73 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+if [ "$CONFIG_MODE" -eq 1 ] && [ "$CLI_CONFIGURATION_SET" -eq 1 ]; then
+  echo "--config cannot be combined with other configuration options" >&2
+  exit 2
+fi
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PYTHON=${PYTHON:-}
+if [ -z "$PYTHON" ]; then
+  PYTHON=$(command -v python3 || true)
+fi
+
+load_deployment_plan() {
+  if [ ! -f "$DEPLOYMENT_CONFIG" ]; then
+    echo "deployment config was not found" >&2
+    exit 1
+  fi
+  if [ ! -f "$SCRIPT_DIR/deployment_config.py" ]; then
+    echo "missing installation file: deployment_config.py" >&2
+    exit 1
+  fi
+  DEPLOYMENT_PLAN=$(
+    "$PYTHON" "$SCRIPT_DIR/deployment_config.py" inspect \
+      --config "$DEPLOYMENT_CONFIG" \
+      --allow-non-root-owner
+  )
+  ENABLE=$(
+    "$PYTHON" -c \
+      'import json,sys; print(1 if json.loads(sys.argv[1])["scheduler_enabled"] else 0)' \
+      "$DEPLOYMENT_PLAN"
+  )
+  INTERVAL=$(
+    "$PYTHON" -c \
+      'import json,sys; print(json.loads(sys.argv[1])["interval_seconds"])' \
+      "$DEPLOYMENT_PLAN"
+  )
+  XUI_EXECUTABLE=$(
+    "$PYTHON" -c \
+      'import json,sys; print(json.loads(sys.argv[1])["xui_executable"])' \
+      "$DEPLOYMENT_PLAN"
+  )
+  DATABASE=$(
+    "$PYTHON" -c \
+      'import json,sys; print(json.loads(sys.argv[1])["database"])' \
+      "$DEPLOYMENT_PLAN"
+  )
+  RUNTIME_SERVICE=$(
+    "$PYTHON" -c \
+      'import json,sys; print(json.loads(sys.argv[1])["service_name"])' \
+      "$DEPLOYMENT_PLAN"
+  )
+  NOTIFICATION_PROVIDER=$(
+    "$PYTHON" -c \
+      'import json,sys; print(json.loads(sys.argv[1])["notification_provider"])' \
+      "$DEPLOYMENT_PLAN"
+  )
+  CONFIG_NOTIFICATIONS_ENABLED=$(
+    "$PYTHON" -c \
+      'import json,sys; print("true" if json.loads(sys.argv[1])["notifications_enabled"] else "false")' \
+      "$DEPLOYMENT_PLAN"
+  )
+  DEPLOYMENT_PLAN_LOADED=1
+}
+
+if [ "$CONFIG_MODE" -eq 1 ] && [ -n "$PYTHON" ] && [ -x "$PYTHON" ]; then
+  load_deployment_plan
+fi
+
 case "$INTERVAL" in
   ''|*[!0-9]*)
     echo "interval must be an integer from 60 to 86400" >&2
@@ -124,7 +210,7 @@ if [ -n "$STAGE_ROOT" ]; then
       ;;
   esac
   STAGE_ROOT=${STAGE_ROOT%/}
-  if [ "$ENABLE" -eq 1 ]; then
+  if [ "$ENABLE" -eq 1 ] && [ "$CONFIG_MODE" -eq 0 ]; then
     echo "--enable cannot be used with --stage-root" >&2
     exit 2
   fi
@@ -217,11 +303,6 @@ if [ -z "$STAGE_ROOT" ]; then
   done
 fi
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PYTHON=${PYTHON:-}
-if [ -z "$PYTHON" ]; then
-  PYTHON=$(command -v python3 || true)
-fi
 if [ -z "$PYTHON" ] && [ -z "$STAGE_ROOT" ] && [ "$PLATFORM" = "linux" ]; then
   echo "Python 3 was not found; installing the distribution package"
   if command -v apt-get >/dev/null 2>&1; then
@@ -251,10 +332,14 @@ if ! "$PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) 
   echo "Python 3.9 or newer is required" >&2
   exit 1
 fi
+if [ "$CONFIG_MODE" -eq 1 ] && [ "$DEPLOYMENT_PLAN_LOADED" -eq 0 ]; then
+  load_deployment_plan
+fi
 
 for file in \
   anomaly_monitor.py \
   alertbridge_notify.py \
+  deployment_config.py \
   feishu_notify.py \
   xui_discovery.py \
   install_ip2region.sh \
@@ -262,6 +347,7 @@ for file in \
   monitor.example.json \
   alertbridge-events.example.json \
   alertbridge-notifications.example.json \
+  deployment.example.json \
   feishu.example.json
 do
   if [ ! -f "$SCRIPT_DIR/$file" ]; then
@@ -297,7 +383,9 @@ DATABASE=$(
 
 if [ "$PLATFORM" = "linux" ]; then
   RUNTIME_MANAGER=systemd
-  RUNTIME_SERVICE=x-ui.service
+  if [ "$CONFIG_MODE" -eq 0 ]; then
+    RUNTIME_SERVICE=x-ui.service
+  fi
   if [ -z "$STAGE_ROOT" ] && {
     [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1
   }; then
@@ -306,7 +394,9 @@ if [ "$PLATFORM" = "linux" ]; then
   fi
 else
   RUNTIME_MANAGER=process
-  RUNTIME_SERVICE=x-ui
+  if [ "$CONFIG_MODE" -eq 0 ]; then
+    RUNTIME_SERVICE=x-ui
+  fi
   if [ -z "$STAGE_ROOT" ] && ! command -v launchctl >/dev/null 2>&1; then
     echo "launchd is required on macOS" >&2
     exit 1
@@ -366,7 +456,9 @@ select_notification_provider() {
   esac
 }
 
-if [ -n "$NOTIFICATION_CONFIG" ]; then
+if [ "$CONFIG_MODE" -eq 1 ]; then
+  select_notification_provider "$NOTIFICATION_PROVIDER"
+elif [ -n "$NOTIFICATION_CONFIG" ]; then
   if [ ! -f "$NOTIFICATION_CONFIG" ]; then
     echo "notification config was not found" >&2
     exit 1
@@ -406,7 +498,10 @@ DOC_DIR=$(dest "/usr/local/share/doc/$PRODUCT")
 BIN_PATH=$(dest "/usr/local/bin/$PRODUCT")
 MONITOR_CONFIG="$CONFIG_DIR/monitor.json"
 
-if [ -z "$NOTIFICATION_CONFIG" ] && [ -f "$MONITOR_CONFIG" ]; then
+if [ "$CONFIG_MODE" -eq 0 ] &&
+  [ -z "$NOTIFICATION_CONFIG" ] &&
+  [ -f "$MONITOR_CONFIG" ]
+then
   NOTIFICATION_PROVIDER=$(
     "$PYTHON" - "$MONITOR_CONFIG" <<'PY'
 import json
@@ -426,24 +521,36 @@ install -d -m 0700 "$CONFIG_DIR"
 install -d -m 0700 "$STATE_DIR"
 install -d -m 0755 "$DOC_DIR"
 install -d -m 0755 "$(dirname "$BIN_PATH")"
-for file in anomaly_monitor.py alertbridge_notify.py feishu_notify.py xui_discovery.py install_ip2region.sh uninstall.sh; do
+for file in anomaly_monitor.py alertbridge_notify.py deployment_config.py feishu_notify.py xui_discovery.py install_ip2region.sh uninstall.sh; do
   install -m 0750 "$SCRIPT_DIR/$file" "$LIB_DIR/$file"
 done
 install -m 0644 "$SCRIPT_DIR/README.md" "$DOC_DIR/README.md"
 install -m 0600 "$SCRIPT_DIR/monitor.example.json" "$CONFIG_DIR/monitor.example.json"
 install -m 0600 "$SCRIPT_DIR/alertbridge-events.example.json" "$CONFIG_DIR/alertbridge-events.example.json"
 install -m 0600 "$SCRIPT_DIR/alertbridge-notifications.example.json" "$CONFIG_DIR/alertbridge-notifications.example.json"
+install -m 0600 "$SCRIPT_DIR/deployment.example.json" "$CONFIG_DIR/deployment.example.json"
 install -m 0600 "$SCRIPT_DIR/feishu.example.json" "$CONFIG_DIR/feishu.example.json"
 
 NOTIFICATIONS_ENABLED=false
-if [ -n "$NOTIFICATION_CONFIG" ]; then
+if [ "$CONFIG_MODE" -eq 1 ]; then
+  NOTIFICATIONS_ENABLED=$CONFIG_NOTIFICATIONS_ENABLED
+elif [ -n "$NOTIFICATION_CONFIG" ]; then
   install -m 0600 "$NOTIFICATION_CONFIG" "$INSTALLED_NOTIFICATION_CONFIG"
   NOTIFICATIONS_ENABLED=true
 elif [ -f "$INSTALLED_NOTIFICATION_CONFIG" ]; then
   NOTIFICATIONS_ENABLED=true
 fi
 
-if [ ! -e "$MONITOR_CONFIG" ]; then
+if [ "$CONFIG_MODE" -eq 1 ]; then
+  "$PYTHON" "$LIB_DIR/deployment_config.py" materialize \
+    --config "$DEPLOYMENT_CONFIG" \
+    --platform "$PLATFORM" \
+    --database "$DATABASE" \
+    --executable "$XUI_EXECUTABLE" \
+    --monitor-output "$MONITOR_CONFIG" \
+    --notification-output "$INSTALLED_NOTIFICATION_CONFIG" \
+    --allow-non-root-owner
+elif [ ! -e "$MONITOR_CONFIG" ]; then
   "$PYTHON" - \
     "$MONITOR_CONFIG" \
     "$DATABASE" \
@@ -676,6 +783,7 @@ fi
 "$PYTHON" -m py_compile \
   "$LIB_DIR/anomaly_monitor.py" \
   "$LIB_DIR/alertbridge_notify.py" \
+  "$LIB_DIR/deployment_config.py" \
   "$LIB_DIR/feishu_notify.py" \
   "$LIB_DIR/xui_discovery.py"
 
@@ -711,6 +819,8 @@ if [ "$NOTIFICATIONS_ENABLED" = "true" ]; then
 else
   echo "notifications: disabled until a notification config is installed"
 fi
-if [ "$ENABLE" -eq 0 ]; then
+if [ -n "$STAGE_ROOT" ]; then
+  echo "scheduler: staged but not enabled"
+elif [ "$ENABLE" -eq 0 ]; then
   echo "scheduler: installed but not enabled"
 fi
