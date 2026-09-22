@@ -1,6 +1,6 @@
 # ThreeXUIScriptMonitor 运维手顺
 
-最后整理：2026-07-30
+最后整理：2026-09-22
 
 ## 1. 边界
 
@@ -193,6 +193,16 @@ sudo /usr/local/bin/threexui-script-monitor --dry-run --json
 
 第一次正式运行只建立流量基线。通知失败时状态不会保存，下一轮会再次尝试。
 
+节点通知已合并为可用性事件：连续两次检查出现状态、心跳或 Xray 异常才告警，
+原因变化和持续异常不重复发送，所有不可用条件消失后只恢复一次。本机服务异常
+使用同样的两次确认规则。`unknown` 不等同于已经证实的网络中断。
+配置待同步、资源、延迟、IP 和流量异常仅检查和记录。
+
+每次正常执行除 `monitor_ok` 外，还记录 `monitor_observation` JSON，包含检查
+时间、异常键和当次事件键/类型；不包含原始 IP、通知密钥或客户端明文标识。
+`issues` 是底层异常数，不是不可用节点数。无通知不代表没有底层异常。
+`--dry-run` 不累计两次确认所需的状态。
+
 AlertBridge 返回 `queued` 只证明入口接受了请求，不代表最终渠道已送达；还要检查
 AlertBridge 的下游投递记录。飞书直连返回 `sent` 表示飞书接口已接受消息，不等于
 用户已阅读。
@@ -251,6 +261,13 @@ sudo cat /usr/local/share/threexui-script-monitor/ip2region-version.txt
 原始 IP 不写入 `state.json`，但会出现在私密通知和 `--dry-run --json` 输出中。
 
 ## 11. 更新与回滚
+
+2026-09-22 通知策略升级：旧 `node:<id>:status/xray/heartbeat/config` 等活动
+状态静默退休，不发送逐项恢复；新事件使用 `node:<id>:availability`，重新累计
+两次异常确认。AlertBridge 旧 incident 不自动关闭，因此历史列表可能仍显示旧
+事件；这不表示脚本仍会继续提醒。`repeat_alert_seconds` 仅为旧配置兼容保留。
+节点停用、删除或表结构不可读不触发恢复；已经告警的聚合状态会保留，直到重新
+观测到健康。升级和回滚时须配套保留程序与状态备份，避免重建事件造成额外提醒。
 
 更新前备份：
 

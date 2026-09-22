@@ -32,6 +32,10 @@ MAX_IP_DATABASE_BYTES = 256 * 1024 * 1024
 MAX_NOTIFICATION_DETAILS_CHARS = 3_000
 SERVICE_PATTERN = re.compile(r"^[A-Za-z0-9_.@-]+$")
 CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f]+")
+NODE_CHECK_COLUMNS = {
+    "id", "name", "enable", "status", "last_heartbeat", "latency_ms",
+    "cpu_pct", "mem_pct", "xray_state", "config_dirty",
+}
 ROOT_CONFIG_KEYS = {
     "version",
     "database_path",
@@ -497,18 +501,7 @@ def collect_node_issues(connection: sqlite3.Connection, config: dict[str, Any], 
     if not table_has_columns(
         connection,
         "nodes",
-        {
-            "id",
-            "name",
-            "enable",
-            "status",
-            "last_heartbeat",
-            "latency_ms",
-            "cpu_pct",
-            "mem_pct",
-            "xray_state",
-            "config_dirty",
-        },
+        NODE_CHECK_COLUMNS,
     ):
         return []
     checks = config["checks"]
@@ -937,37 +930,77 @@ def plan_notifications(
     now: int,
     repeat_seconds: int,
     notifications_enabled: bool = True,
+    *,
+    observed_keys: set[str] | None = None,
+    max_sample_gap: int = 630,
 ) -> tuple[list[NotificationAction], dict[str, Any]]:
+    """Two observations open one incident per target; only observed health closes it.
+
+    repeat_seconds remains accepted for old callers/configs, but no longer repeats.
+    Old per-check keys are retired silently, not turned into recovery messages.
+    """
     previous = previous_active if isinstance(previous_active, dict) else {}
+    observed_keys = observed_keys if observed_keys is not None else set()
+    grouped: dict[str, list[Issue]] = {}
+    for issue in issues:
+        match = re.fullmatch(r"node:(\d+):(status|heartbeat|xray)", issue.key)
+        if match:
+            key = f"node:{match[1]}:availability"
+        elif issue.key == "local-service:x-ui":
+            key = "local-service:x-ui:availability"
+        else:
+            continue
+        grouped.setdefault(key, []).append(issue)
     actions: list[NotificationAction] = []
     active: dict[str, Any] = {}
-    for issue in issues:
-        old = previous.get(issue.key)
+    for key, causes in grouped.items():
+        old = previous.get(key)
         old = old if isinstance(old, dict) else {}
-        first_seen = int(old.get("first_seen", now))
         last_notified = int(old.get("last_notified", 0))
-        changed = old.get("level") != issue.level
-        should_notify = not old or changed or now - last_notified >= repeat_seconds
-        if should_notify and notifications_enabled:
+        consecutive = 0 < now - int(old.get("last_seen", 0)) <= max_sample_gap
+        count = min(2, int(old.get("failure_count", 0)) + 1) if consecutive else 1
+        first_seen = int(old.get("first_seen", now)) if consecutive or last_notified else now
+        title = "节点不可用" if key.startswith("node:") else "主节点服务不可用"
+        message = "；".join(cause.message for cause in causes)
+        issue = Issue(key, "critical", title, message,
+                      "依据：管理面状态检查，不等同于用户侧代理连通性实测。")
+        if count >= 2 and not last_notified and notifications_enabled:
             actions.append(NotificationAction("alert", issue))
             last_notified = now
-        active[issue.key] = {
+        active[key] = {
             "level": issue.level,
             "title": issue.title,
             "message": issue.message,
             "first_seen": first_seen,
             "last_seen": now,
             "last_notified": last_notified,
+            "failure_count": count,
         }
     for key, old in previous.items():
-        if key in active or not isinstance(old, dict):
+        if (key in active or not isinstance(old, dict)
+                or not re.fullmatch(r"(?:node:\d+|local-service:x-ui):availability", key)):
             continue
-        title = str(old.get("title", "异常"))
-        message = str(old.get("message", "此前异常已消失"))
-        recovery = Issue(key, "recovery", f"{title}已恢复", f"此前状态：{message}")
-        if notifications_enabled:
+        if key not in observed_keys or not notifications_enabled:
+            # Disabled/deleted/missing targets are not evidence of recovery.
+            if old.get("last_notified"):
+                active[key] = {**old, "failure_count": 0}
+            continue
+        if old.get("last_notified"):
+            duration = max(0, now - int(old.get("first_seen", now)))
+            title = "节点已恢复" if key.startswith("node:") else "主节点服务已恢复"
+            recovery = Issue(key, "recovery", title,
+                             f"此前状态：{old.get('message', '')}；"
+                             f"已观测异常持续约 {duration} 秒，当前不可用条件均已消失。")
             actions.append(NotificationAction("recovery", recovery))
     return actions, active
+
+
+def observed_availability_keys(connection: sqlite3.Connection) -> set[str]:
+    keys = {"local-service:x-ui:availability"}
+    if table_has_columns(connection, "nodes", NODE_CHECK_COLUMNS):
+        keys.update(f"node:{int(row['id'])}:availability"
+                    for row in connection.execute("SELECT id FROM nodes WHERE enable = 1"))
+    return keys
 
 
 def render_notification(
@@ -1077,7 +1110,11 @@ def main() -> int:
         state = load_state(config["state_path"])
         now = int(time.time())
         connection = connect_database(config["database_path"])
+        connection.execute("BEGIN")
         issues = collect_database_issues(connection, config, state, now)
+        observed_keys = observed_availability_keys(connection)
+        traffic_totals = collect_traffic_totals(connection)
+        connection.rollback()
         service_issue = check_local_service(config["runtime"])
         if service_issue:
             issues.insert(0, service_issue)
@@ -1087,6 +1124,8 @@ def main() -> int:
             now,
             int(config["checks"]["repeat_alert_seconds"]),
             config["notifications"]["enabled"],
+            observed_keys=observed_keys,
+            max_sample_gap=int(config["runtime"]["interval_seconds"]) * 2 + 30,
         )
         if args.json or args.dry_run:
             print(
@@ -1106,12 +1145,17 @@ def main() -> int:
         next_state = {
             "version": 1,
             "last_run_at": now,
-            "traffic_totals": collect_traffic_totals(connection),
+            "traffic_totals": traffic_totals,
             "active_alerts": active,
         }
         save_state(config["state_path"], next_state)
         if not args.json:
             print(f"monitor_ok issues={len(issues)} notifications={len(actions)}")
+            print("monitor_observation " + json.dumps({
+                "checked_at": now,
+                "issue_keys": [issue.key for issue in issues],
+                "events": [{"kind": action.kind, "key": action.issue.key} for action in actions],
+            }, ensure_ascii=False))
         return 0
     except MonitorError as exc:
         print(f"monitor_failed: {exc}", file=sys.stderr)

@@ -243,8 +243,8 @@ class AnomalyMonitorTest(unittest.TestCase):
 
         actions, active = monitor.plan_notifications([issue], {}, self.now, 3600)
 
-        self.assertEqual(len(actions), 1)
-        self.assertNotIn("notification_details", active[issue.key])
+        self.assertEqual(actions, [])
+        self.assertEqual(active, {})
         self.assertNotIn("1.1.1.1", str(active))
 
     def test_client_ip_detail_config_is_opt_in_and_bounded(self):
@@ -316,17 +316,19 @@ class AnomalyMonitorTest(unittest.TestCase):
         self.assertEqual(addresses, {"2001:db8:1:2::/64", "2001:db8:1:3::/64"})
 
     def test_notifications_are_deduplicated_and_recovery_is_emitted(self):
-        issue = monitor.Issue("node:1:offline", "critical", "节点离线", "node-a")
+        issue = monitor.Issue("node:1:status", "critical", "节点离线", "node-a offline")
 
         first_actions, first_active = monitor.plan_notifications(
             [issue], {}, self.now, 3600
         )
-        self.assertEqual([item.kind for item in first_actions], ["alert"])
+        self.assertEqual(first_actions, [])
 
         second_actions, second_active = monitor.plan_notifications(
             [issue], first_active, self.now + 300, 3600
         )
-        self.assertEqual(second_actions, [])
+        self.assertEqual([item.kind for item in second_actions], ["alert"])
+        self.assertEqual(second_actions[0].issue.key, "node:1:availability")
+        self.assertEqual(second_actions[0].issue.title, "节点不可用")
 
         changed_detail = issue._replace(message="node-a remains offline")
         detail_actions, detail_active = monitor.plan_notifications(
@@ -335,13 +337,17 @@ class AnomalyMonitorTest(unittest.TestCase):
         self.assertEqual(detail_actions, [])
 
         recovery_actions, recovery_active = monitor.plan_notifications(
-            [], detail_active, self.now + 600, 3600
+            [], detail_active, self.now + 600, 3600,
+            observed_keys={"node:1:availability"},
         )
         self.assertEqual([item.kind for item in recovery_actions], ["recovery"])
         self.assertEqual(recovery_active, {})
+        self.assertEqual(recovery_actions[0].issue.title, "节点已恢复")
+        self.assertIn("600 秒", recovery_actions[0].issue.message)
+        self.assertEqual(monitor.plan_notifications([], {}, self.now + 900, 3600)[0], [])
 
     def test_disabled_notifications_do_not_mark_anomaly_as_notified(self):
-        issue = monitor.Issue("node:1:offline", "critical", "节点离线", "node-a")
+        issue = monitor.Issue("node:1:status", "critical", "节点离线", "node-a")
 
         actions, active = monitor.plan_notifications(
             [issue],
@@ -352,7 +358,7 @@ class AnomalyMonitorTest(unittest.TestCase):
         )
 
         self.assertEqual(actions, [])
-        self.assertEqual(active[issue.key]["last_notified"], 0)
+        self.assertEqual(active["node:1:availability"]["last_notified"], 0)
 
         enabled_actions, _ = monitor.plan_notifications(
             [issue],
@@ -362,6 +368,97 @@ class AnomalyMonitorTest(unittest.TestCase):
             notifications_enabled=True,
         )
         self.assertEqual([item.kind for item in enabled_actions], ["alert"])
+
+    def test_multiple_causes_and_reason_changes_never_repeat(self):
+        issues = [monitor.Issue("node:1:" + reason, "critical", reason, reason)
+                  for reason in ("status", "xray")]
+        _, state = monitor.plan_notifications(issues, {}, self.now, 3600)
+        actions, state = monitor.plan_notifications(issues, state, self.now + 300, 3600)
+        self.assertEqual(len(actions), 1)
+        self.assertIn("status", actions[0].issue.message)
+        self.assertIn("xray", actions[0].issue.message)
+        changed = [monitor.Issue("node:1:heartbeat", "critical", "心跳", "unknown")]
+        actions, state = monitor.plan_notifications(changed, state, self.now + 30000, 3600)
+        self.assertEqual(actions, [])
+        self.assertEqual(len(state), 1)
+
+    def test_transient_failure_and_old_alerts_recover_silently(self):
+        issue = monitor.Issue("node:1:status", "critical", "offline", "offline")
+        _, state = monitor.plan_notifications([issue], {}, self.now, 3600)
+        actions, state = monitor.plan_notifications([], state, self.now + 300, 3600,
+                                                   observed_keys={"node:1:availability"})
+        self.assertEqual((actions, state), ([], {}))
+        legacy = {"node:1:status": {"last_notified": self.now},
+                  "node:1:config": {"last_notified": self.now}}
+        self.assertEqual(monitor.plan_notifications([], legacy, self.now, 3600), ([], {}))
+
+    def test_unobserved_node_does_not_recover_and_gap_resets_pending(self):
+        issue = monitor.Issue("node:1:status", "critical", "offline", "offline")
+        _, state = monitor.plan_notifications([issue], {}, self.now, 3600)
+        actions, state = monitor.plan_notifications([issue], state, self.now + 3000, 3600,
+                                                   max_sample_gap=630)
+        self.assertEqual(actions, [])
+        self.assertEqual(state["node:1:availability"]["failure_count"], 1)
+        _, state = monitor.plan_notifications([issue], state, self.now + 3300, 3600)
+        actions, state = monitor.plan_notifications([], state, self.now + 3600, 3600,
+                                                   observed_keys=set())
+        self.assertEqual(actions, [])
+        self.assertIn("node:1:availability", state)
+
+    def test_non_availability_issues_are_silent_and_local_service_is_grouped(self):
+        issues = [monitor.Issue(key, "critical", "test", "test") for key in
+                  ("node:1:config", "node:1:cpu", "node:1:memory", "node:1:latency",
+                   "client-ip:test", "client-traffic:test")]
+        self.assertEqual(monitor.plan_notifications(issues, {}, self.now, 3600), ([], {}))
+        issue = monitor.Issue("local-service:x-ui", "critical", "服务", "inactive")
+        _, state = monitor.plan_notifications([issue], {}, self.now, 3600)
+        actions, state = monitor.plan_notifications([issue], state, self.now + 300, 3600)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].issue.title, "主节点服务不可用")
+
+    def test_observed_keys_exclude_disabled_nodes_and_incompatible_tables(self):
+        connection = make_database()
+        self.addCleanup(connection.close)
+        for node_id, enabled in ((1, 1), (2, 0)):
+            connection.execute(
+                "INSERT INTO nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (node_id, "guid", "node", enabled, "online", self.now, 50, 5, 10,
+                 "running", 0, "", ""),
+            )
+        self.assertEqual(monitor.observed_availability_keys(connection),
+                         {"node:1:availability", "local-service:x-ui:availability"})
+        connection.execute("DROP TABLE nodes")
+        self.assertEqual(monitor.observed_availability_keys(connection),
+                         {"local-service:x-ui:availability"})
+
+    def test_two_nodes_recover_independently_without_partial_recovery(self):
+        issues = [monitor.Issue(key, "critical", "bad", key) for key in
+                  ("node:1:status", "node:1:xray", "node:2:status")]
+        _, state = monitor.plan_notifications(issues, {}, self.now, 3600)
+        actions, state = monitor.plan_notifications(issues, state, self.now + 300, 3600)
+        self.assertEqual(len(actions), 2)
+        actions, state = monitor.plan_notifications(
+            [issues[1]], state, self.now + 600, 3600,
+            observed_keys={"node:1:availability", "node:2:availability"})
+        self.assertEqual([(a.kind, a.issue.key) for a in actions],
+                         [("recovery", "node:2:availability")])
+        self.assertIn("node:1:availability", state)
+
+    @mock.patch.object(monitor, "save_state")
+    @mock.patch.object(monitor, "send_actions")
+    def test_dry_run_does_not_send_or_accumulate_confirmation(self, send, save):
+        connection = make_database()
+        with mock.patch.object(monitor, "parse_args", return_value=mock.Mock(
+                config="unused", dry_run=True, json=True)), \
+             mock.patch.object(monitor, "load_config", return_value=self.config), \
+             mock.patch.object(monitor, "load_state", return_value={}), \
+             mock.patch.object(monitor, "acquire_lock", return_value=None), \
+             mock.patch.object(monitor, "connect_database", return_value=connection), \
+             mock.patch.object(monitor, "check_local_service", return_value=None), \
+             mock.patch("builtins.print"):
+            self.assertEqual(monitor.main(), 0)
+        send.assert_not_called()
+        save.assert_not_called()
 
     def test_stale_node_heartbeat_is_critical(self):
         connection = make_database()
