@@ -1,6 +1,9 @@
 # ThreeXUIScriptMonitor 运维手顺
 
-最后整理：2026-09-22
+最后整理：2026-10-28
+
+当前生产实例为 **JTTI-Japan-01**，新加坡原实例保持停用。以下生产运维命令应在
+JTTI 上执行；环境、通知标识与核验结果见 [JTTI 部署记录](deployment-jtti.md)。
 
 ## 1. 边界
 
@@ -170,6 +173,11 @@ sudo launchctl print system/com.threexui.script-monitor
 
 ## 8. 日常检查
 
+监控使用 oneshot service，检查结束后 service 为 `inactive` 是正常现象；应结合
+timer 的 `enabled/active`、service 的 `Result/ExecMainStatus` 和执行日志判断。
+修改监控 JSON 后，下一轮会重新读取；可手动启动 service 立即检查。更改运行周期
+仍需同步调度文件，见第 7 节。
+
 Linux：
 
 ```sh
@@ -177,6 +185,22 @@ sudo systemctl status threexui-script-monitor.timer --no-pager
 sudo systemctl status threexui-script-monitor.service --no-pager
 sudo journalctl -u threexui-script-monitor.service -n 100 --no-pager
 ```
+
+暂停监控并取消开机自动调度：
+
+```sh
+sudo systemctl disable --now threexui-script-monitor.timer
+sudo systemctl stop threexui-script-monitor.service
+```
+
+恢复调度：
+
+```sh
+sudo systemctl enable --now threexui-script-monitor.timer
+```
+
+以上操作保留程序、配置和历史状态。迁移完成后不要同时恢复新加坡旧实例，以免
+重复告警。恢复旧主机必须先明确切换目标并停用当前实例。
 
 macOS：
 
